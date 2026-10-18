@@ -1,0 +1,45 @@
+server:
+  port: ${API_PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: vesselops-api
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:vesselops}
+    username: ${POSTGRES_USER:vesselops}
+    password: ${POSTGRES_PASSWORD:vesselops_dev}
+    hikari:
+      maximum-pool-size: 8
+      # DB 가 늦게 떠도 기동에 실패하지 않고 기다린다
+      initialization-fail-timeout: -1
+  jackson:
+    time-zone: UTC
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+vesselops:
+  alarm:
+    # 알람 엔진 평가 주기
+    interval-ms: 1000
+    # 이 시간 안에 들어온 값만 "현재값"으로 본다. Edge Heartbeat(60초)보다 길어야 한다.
+    fresh-seconds: 90
+    # 조건 해소 후 이 시간이 지나야 해제한다 (채터링 방지)
+    clear-hold-seconds: 10
+    # 주기관 회전수가 이 미만이면 정지로 보고 주기관 알람을 억제한다
+    engine-running-rpm: 5
+  online:
+    # 마지막 수신 후 이 시간이 지나면 통신 단절로 표시
+    timeout-seconds: 20
+
+logging:
+  level:
+    com.vesselops: INFO

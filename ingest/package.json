@@ -1,0 +1,19 @@
+{
+  "name": "vesselops-ingest",
+  "version": "1.0.0",
+  "description": "육상 수집기 — MQTT 수신, 검증, 시계열 DB 배치 적재, 브라우저 실시간 푸시",
+  "type": "module",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.4",
+    "pg": "^8.13.1",
+    "ws": "^8.18.0"
+  }
+}

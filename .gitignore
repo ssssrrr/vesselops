@@ -1,0 +1,35 @@
+# Node
+node_modules/
+npm-debug.log*
+.env
+.env.local
+
+# Java / Gradle
+api/build/
+api/.gradle/
+api/bin/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+Thumbs.db
+desktop.ini
+
+# 개인 작업 메모 — 공개 저장소에 올리지 않는다
+WORKLOG.md
+INTERVIEW.md
+
+# Runtime
+logs/
+*.log
+data/
+certs/
+
+# 타사 로고 — 상표라 공개 저장소에 올리지 않는다. 없으면 화면은 글자 표시로 대체된다
+web/public/brand/

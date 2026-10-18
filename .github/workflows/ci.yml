@@ -1,0 +1,135 @@
+# CI — push·PR 마다 빌드와 시험을 자동으로 돌린다.
+#
+#   api-test    업무 API 단위 시험 (JUnit)
+#   node-check  Node.js 3개 프로그램의 의존성 설치·문법 검사
+#   smoke       컨테이너 7개를 실제로 띄워 종단 경로가 살아 있는지 확인
+#
+# smoke 의 확인 항목은 docs/09-deployment.md 4장(배포 후 확인)의 1·2·5번과 같다.
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# 같은 브랜치에 새 커밋이 오면 앞선 실행은 취소한다
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  api-test:
+    name: API 단위 시험
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # 저장소에 Gradle Wrapper 를 두지 않았으므로 Dockerfile 과 같은 버전을 지정해 받는다
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: 단위 시험
+        working-directory: api
+        run: gradle test --no-daemon
+
+      - name: 시험 보고서 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-test-report
+          path: api/build/reports/tests/test
+          if-no-files-found: ignore
+
+  node-check:
+    name: Node 검사 (${{ matrix.service }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [simulator, edge-gw, ingest]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.service }}/package-lock.json
+
+      # package-lock.json 과 어긋나면 여기서 실패한다
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: 문법 검사
+        run: find src -name '*.js' -print0 | xargs -0 -n1 node --check
+
+  smoke:
+    name: 컨테이너 기동 확인
+    needs: [api-test, node-check]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 설정 파일 준비
+        run: cp .env.example .env
+
+      - name: compose 파일 검증
+        run: docker compose config -q
+
+      # --wait: healthcheck 가 있는 컨테이너(db·broker·api)가 healthy 가 될 때까지 기다린다
+      - name: 빌드·기동
+        run: docker compose up -d --build --wait --wait-timeout 300
+
+      - name: 컨테이너 7개 확인
+        run: |
+          docker compose ps
+          test "$(docker compose ps --status running -q | wc -l)" -eq 7
+
+      - name: 마스터 적재 확인 (계측점 142건)
+        run: |
+          count=$(docker exec vesselops-db psql -U vesselops -d vesselops -tAc "SELECT count(*) FROM tag")
+          echo "tag = $count"
+          test "$count" -eq 142
+
+      # 수집 경로(sim → edge → broker → ingest → db)가 이어져야 선박이 online 이 된다
+      - name: 종단 경로 확인 (선박 4척 online)
+        run: |
+          for i in $(seq 1 30); do
+            online=$(curl -fsS http://localhost/api/v1/vessels | jq '[.[] | select(.online)] | length' || true)
+            online=${online:-0}
+            echo "online = $online"
+            if [ "$online" -eq 4 ]; then exit 0; fi
+            sleep 5
+          done
+          exit 1
+
+      # 브로커는 TLS + 클라이언트 인증서로만 접속을 받아야 한다 (docs/08-test.md TC-106·107)
+      - name: 암호화 접속 확인
+        run: docker logs vesselops-ingest 2>&1 | grep -F '브로커 접속 mqtts://broker:8883 (TLSv1'
+
+      - name: 인증서 없는 접속 거부 확인
+        run: |
+          if docker exec vesselops-broker mosquitto_pub -h localhost -p 8883 \
+               --cafile /mosquitto/certs/ca.crt -t vesselops/telemetry/9876543/ME -m x; then
+            echo "인증서 없이 발행됐다"; exit 1
+          fi
+
+      - name: 실패 시 로그
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --tail 100

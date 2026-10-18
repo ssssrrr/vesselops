@@ -1,0 +1,18 @@
+{
+  "name": "vesselops-edge-gw",
+  "version": "1.0.0",
+  "description": "본선 Edge 수집기 — OPC UA 수집, Deadband, 적응형 전송, 단절 버퍼링 후 MQTT 발행",
+  "type": "module",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.4",
+    "node-opcua": "^2.150.0"
+  }
+}

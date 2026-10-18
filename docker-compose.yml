@@ -1,0 +1,190 @@
+name: vesselops
+
+# 외부에 공개하는 포트는 web(80) 하나뿐이다.
+# DB·브로커 포트는 개발 편의를 위해 호스트의 127.0.0.1 에만 연다 — 클라우드에서도 외부에서 닿지 않는다.
+# 브로커는 TLS + 클라이언트 인증서로만 접속을 받는다. 본선을 다른 장비로 떼어 낼 때만 MQTT_BIND 로 공개한다.
+
+services:
+  # -------------------------------------------------------------------
+  # 시계열 + 관계형 통합 DB
+  # -------------------------------------------------------------------
+  db:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: vesselops-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vesselops}
+      POSTGRES_USER: ${POSTGRES_USER:-vesselops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vesselops_dev}
+      TZ: Asia/Seoul
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      # *.sql 은 최초 기동(빈 볼륨) 시 파일명 순서대로 1회 실행된다
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vesselops} -d ${POSTGRES_DB:-vesselops}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------------------------------------------------
+  # 인증서 발급 — 최초 기동 때 한 번 실행하고 종료한다 (deploy/pki/gen-certs.sh)
+  # 개인키는 쓰는 프로그램의 볼륨에만 들어간다.
+  # -------------------------------------------------------------------
+  pki:
+    build: ./deploy/pki
+    container_name: vesselops-pki
+    restart: "no"
+    environment:
+      PKI_VESSELS: ${PKI_VESSELS:-9876543 9876544 9812345 9754321}
+      PKI_BROKER_SAN: ${PKI_BROKER_SAN:-}
+    volumes:
+      - pki_ca:/pki/ca
+      - pki_broker:/pki/broker
+      - pki_edge:/pki/edge
+      - pki_ingest:/pki/ingest
+      # 접근 제어 파일도 브로커 계정 소유로 넘겨준다 (브로커가 소유자·권한을 검사한다)
+      - ./deploy/mosquitto/acl.conf:/pki/acl.conf:ro
+
+  # -------------------------------------------------------------------
+  # MQTT 브로커 — 본선 Edge 수집기가 여기로 발행한다 (TLS 8883, 클라이언트 인증서 필수)
+  # -------------------------------------------------------------------
+  broker:
+    image: eclipse-mosquitto:2.0
+    container_name: vesselops-broker
+    restart: unless-stopped
+    ports:
+      - "${MQTT_BIND:-127.0.0.1}:8883:8883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - pki_broker:/mosquitto/certs:ro
+      - broker_data:/mosquitto/data
+      - broker_log:/mosquitto/log
+    depends_on:
+      pki:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mosquitto_sub -h localhost -p 8883
+          --cafile /mosquitto/certs/ca.crt
+          --cert /mosquitto/certs/healthcheck.crt --key /mosquitto/certs/healthcheck.key
+          -t '$$SYS/broker/version' -C 1 -W 3 >/dev/null 2>&1 || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------------
+  # 선단 시뮬레이터 — 실선의 AMS 자리를 대신하는 OPC UA 서버
+  # -------------------------------------------------------------------
+  sim-fleet:
+    build: ./simulator
+    container_name: vesselops-sim
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul
+      SIM_AUTO_FAULT: ${SIM_AUTO_FAULT:-true}
+
+  # -------------------------------------------------------------------
+  # 본선 Edge 수집기 — OPC UA 수집 → Deadband·적응형 전송 → MQTT
+  # -------------------------------------------------------------------
+  edge-gw:
+    build: ./edge-gw
+    container_name: vesselops-edge
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul
+      OPCUA_ENDPOINT: opc.tcp://sim-fleet:4840/vesselops
+      MQTT_URL: mqtts://broker:8883
+      MQTT_CA_FILE: /certs/ca.crt
+      # 선박별 인증서: {IMO}.crt / {IMO}.key
+      MQTT_CERT_DIR: /certs
+      # 시연은 false(항상 1초 원본), 실선 프로파일은 true(평상시 1분 요약)
+      ADAPTIVE_ENABLED: ${ADAPTIVE_ENABLED:-false}
+    volumes:
+      - pki_edge:/certs:ro
+    depends_on:
+      sim-fleet:
+        condition: service_started
+      broker:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------
+  # 육상 수집기 — MQTT 수신 → 검증 → DB 배치 적재 / WebSocket 푸시
+  # -------------------------------------------------------------------
+  ingest:
+    build: ./ingest
+    container_name: vesselops-ingest
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul
+      MQTT_URL: mqtts://broker:8883
+      MQTT_CA_FILE: /certs/ca.crt
+      MQTT_CERT_FILE: /certs/ingest-1.crt
+      MQTT_KEY_FILE: /certs/ingest-1.key
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB:-vesselops}
+      POSTGRES_USER: ${POSTGRES_USER:-vesselops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vesselops_dev}
+    volumes:
+      - pki_ingest:/certs:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------
+  # 업무 API — 조회·알람 룰 엔진 (Spring Boot)
+  # -------------------------------------------------------------------
+  api:
+    build: ./api
+    container_name: vesselops-api
+    restart: unless-stopped
+    # JVM 힙은 이 한도의 70% 까지만 잡는다 (Dockerfile 의 MaxRAMPercentage)
+    mem_limit: 768m
+    environment:
+      TZ: Asia/Seoul
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB:-vesselops}
+      POSTGRES_USER: ${POSTGRES_USER:-vesselops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vesselops_dev}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8080' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  # -------------------------------------------------------------------
+  # 웹 — 정적 화면 + 역방향 프록시. 외부 공개는 이 컨테이너뿐이다.
+  # -------------------------------------------------------------------
+  web:
+    image: nginx:1.27-alpine
+    container_name: vesselops-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:80"
+    volumes:
+      - ./web/public:/usr/share/nginx/html:ro
+      - ./deploy/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+      - ingest
+      - sim-fleet
+      - edge-gw
+
+volumes:
+  db_data:
+  broker_data:
+  broker_log:
+  pki_ca:
+  pki_broker:
+  pki_edge:
+  pki_ingest:

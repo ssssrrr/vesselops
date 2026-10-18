@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VesselOps — 선박 기관 원격 상태감시</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <!-- 로고 파일이 없으면 스스로 사라지고 글자 표시만 남는다 -->
+      <img class="brand-logo" src="brand/logo.png" alt="Hanwha Engine" onerror="this.remove()">
+      <span class="brand-mark">VesselOps</span>
+      <span class="brand-sub">선박 기관 원격 상태감시 · 예지보전</span>
+    </div>
+    <div class="topbar-right">
+      <span id="ws-state" class="chip chip-muted">실시간 연결 중…</span>
+      <span id="clock" class="clock"></span>
+      <!-- 로그인은 아직 구현하지 않았다 (FR-501). 이름은 고정 표시다 -->
+      <span class="user" title="현재 접속자">
+        <span class="user-avatar" aria-hidden="true">최</span>
+        <span class="user-label">접속자</span>
+        <b class="user-name">최승렬</b>
+      </span>
+    </div>
+  </header>
+
+  <main>
+    <section aria-label="선단 현황">
+      <h2 class="section-title">선단 현황</h2>
+      <div id="fleet" class="fleet"></div>
+    </section>
+
+    <section id="vessel-head" class="vessel-head" aria-live="polite"></section>
+
+    <section aria-label="주요 계측값">
+      <div id="kpis" class="kpis"></div>
+    </section>
+
+    <div class="grid-2">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>실린더별 배기온도 편차</h2>
+          <span id="dev-summary" class="chip chip-muted"></span>
+        </div>
+        <p class="panel-note">
+          각 실린더를 전 실린더 평균과 비교합니다. 절대 온도가 정상범위여도 한 실린더만 벌어지면
+          연료분사밸브·배기밸브 이상의 조기 징후입니다.
+        </p>
+        <div id="deviation" class="deviation"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>추세</h2>
+          <div class="seg" id="trend-groups" role="tablist">
+            <button data-group="exh" class="on">배기온도</button>
+            <button data-group="temp">온도</button>
+            <button data-group="press">압력</button>
+            <button data-group="load">부하·회전수</button>
+          </div>
+          <div class="seg" id="trend-range">
+            <button data-min="5">5분</button>
+            <button data-min="15" class="on">15분</button>
+            <button data-min="60">1시간</button>
+            <button data-min="360">6시간</button>
+          </div>
+        </div>
+        <div class="chart-box"><canvas id="trend"></canvas></div>
+      </section>
+    </div>
+
+    <div class="grid-2">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>알람</h2>
+          <div class="seg" id="alarm-filter">
+            <button data-state="OPEN" class="on">미해제</button>
+            <button data-state="">전체 이력</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="alarms">
+            <thead>
+              <tr><th>발생</th><th>등급</th><th>내용</th><th>상태</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel demo">
+        <div class="panel-head">
+          <h2>시연 패널</h2>
+          <span class="chip chip-accent">직접 조작해 보세요</span>
+        </div>
+        <p class="panel-note">
+          선택한 선박에 고장을 주입하면 값이 서서히 변하고, 조건이 일정 시간 지속되면 알람이 발생합니다.
+          조작 후 10분이 지나면 자동으로 정상 복귀합니다.
+        </p>
+        <div class="demo-row">
+          <label>고장 종류
+            <select id="fault-type">
+              <option value="CYL_EXH_DEVIATION">실린더 배기온도 편차 (약 2분 뒤 편차 알람)</option>
+              <option value="LO_PRESSURE_DROP">윤활유 압력 저하 (하한 알람)</option>
+              <option value="THRUST_BRG_HEATING">추력베어링 과열 (변화율 알람)</option>
+              <option value="TC_FOULING">과급기 오염 (소기압 저하·배기온도 상승)</option>
+            </select>
+          </label>
+          <label id="cyl-wrap">실린더
+            <select id="fault-cyl"></select>
+          </label>
+        </div>
+        <div class="demo-row">
+          <button id="btn-inject" class="btn btn-primary">고장 주입</button>
+          <button id="btn-clear" class="btn">전체 정상 복귀</button>
+          <button id="btn-link" class="btn">위성 링크 단절</button>
+        </div>
+        <div id="demo-state" class="demo-state"></div>
+      </section>
+    </div>
+
+    <section class="panel" aria-label="MQTT 수신 현황">
+      <div class="panel-head">
+        <h2>MQTT 수신 현황</h2>
+        <span id="mq-transport" class="chip chip-muted">브로커 접속 확인 중…</span>
+        <button id="mq-pause" class="btn btn-sm" type="button" aria-pressed="false" title="화면의 목록만 멈춥니다. 수집과 DB 적재는 계속됩니다.">목록 멈춤</button>
+      </div>
+      <p class="panel-note">
+        본선 Edge 수집기가 발행한 메시지를 육상 수집기가 받는 즉시 보여 줍니다. 전 선박의 메시지가 표시되며,
+        행을 누르면 그 메시지의 원문을 고정해서 볼 수 있습니다.
+      </p>
+      <ol class="mq-flow" aria-label="데이터 경로">
+        <li><b>본선 Edge</b><span>선박별 인증서</span></li>
+        <li class="mq-link" id="mq-link-label">MQTT · TLS 8883</li>
+        <li><b>브로커</b><span>토픽 권한 검사</span></li>
+        <li class="mq-link">구독</li>
+        <li><b>육상 수집기</b><span>검증 · 배치 적재</span></li>
+        <li class="mq-link">WebSocket</li>
+        <li><b>이 화면</b><span>DB 에도 적재</span></li>
+      </ol>
+      <div id="mq-stats" class="mq-stats"></div>
+      <div class="mq-body">
+        <div class="table-wrap mq-log">
+          <table class="table" id="mq-log">
+            <thead>
+              <tr>
+                <th>수신 시각</th><th>선박</th><th>토픽</th><th>구분</th>
+                <th class="r">값</th><th class="r">순번</th><th class="r">지연</th><th class="r">크기</th><th>처리</th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="9" class="empty">메시지를 기다리는 중입니다.</td></tr></tbody>
+          </table>
+        </div>
+        <div class="mq-raw">
+          <div class="mq-raw-head"><b>메시지 원문</b><span id="mq-raw-meta">최신 메시지</span></div>
+          <pre id="mq-raw">—</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>전체 계측값</h2>
+        <span id="tag-count" class="chip chip-muted"></span>
+      </div>
+      <div id="tags" class="tags"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    시뮬레이터(OPC UA) → Edge 수집기 → MQTT → 육상 수집기(Node.js) → TimescaleDB → 업무 API(Spring Boot) → 화면.
+    표시 데이터는 전부 시뮬레이터가 만든 합성 데이터입니다.
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
