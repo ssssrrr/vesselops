@@ -11,6 +11,8 @@
 <body>
   <header class="topbar">
     <div class="brand">
+      <!-- 로고 파일이 없으면 스스로 사라지고 글자 표시만 남는다 -->
+      <img class="brand-logo" src="brand/logo.png" alt="Hanwha Engine" onerror="this.remove()">
       <span class="brand-mark">VesselOps</span>
       <span class="brand-sub">선박 기관 원격 상태감시 · 예지보전</span>
     </div>
@@ -25,7 +27,6 @@
       </span>
     </div>
   </header>
-  <div class="portfolio-note">한화엔진 디지털 솔루션 SW 개발 지원 포트폴리오 · 최승렬 · 개인 프로젝트이며 실제 선박·고객 데이터가 아닌 시뮬레이터 데이터입니다</div>
 
   <main>
     <section aria-label="선단 현황">
