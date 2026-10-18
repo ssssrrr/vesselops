@@ -5,7 +5,7 @@
 | 항목 | 내용 |
 |---|---|
 | 프로젝트명 | VesselOps — Vessel Machinery Condition Monitoring Platform |
-| 수행기간 | 2026-09-28 ~ 2026-10-18 |
+| 수행기간 | 2026-10-07 ~ 2026-10-18 |
 | 수행인원 | 최승렬 (기획·설계·개발·배포 전 과정) |
 | 라이브 데모 | http://15.135.85.42 (AWS EC2, 시뮬레이터 데이터) |
 | 저장소 | https://github.com/ssssrrr/vesselops |
